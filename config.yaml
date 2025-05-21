@@ -1,0 +1,39 @@
+# 代理配置
+proxy:
+  enabled: true
+  type: http  # http 或 socks5
+  rotation_interval: 300  # 代理轮换间隔（秒）
+  check_timeout: 10  # 代理检测超时时间（秒）
+
+# 浏览器配置
+browser:
+  headless: false
+  timeout: 30000  # 页面加载超时时间（毫秒）
+  pool_size: 3  # 浏览器实例池大小
+
+# 验证码配置
+captcha:
+  service: 2captcha  # 验证码服务提供商
+  api_key: ${CAPTCHA_API_KEY}  # 从环境变量读取
+  timeout: 120  # 验证码获取超时时间（秒）
+
+# 邮箱配置
+email:
+  provider: proton.me
+  imap_server: imap.proton.me
+  imap_port: 993
+  username: ${EMAIL_USERNAME}
+  password: ${EMAIL_PASSWORD}
+
+# 日志配置
+logging:
+  level: INFO
+  file: logs/app.log
+  rotation: "1 day"
+  retention: "7 days"
+
+# 安全配置
+security:
+  request_delay: 2  # 请求间隔（秒）
+  max_retries: 3  # 最大重试次数
+  retry_delay: 5  # 重试延迟（秒） 
