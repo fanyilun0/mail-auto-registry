@@ -3,7 +3,7 @@ import os
 from loguru import logger
 from proxy.proxy_manager import ProxyManager
 from browser.browser_manager import BrowserManager
-from email.email_handler import EmailHandler
+from email_handler import EmailHandler
 from captcha.captcha_solver import CaptchaSolver
 from dotenv import load_dotenv
 import yaml
@@ -108,7 +108,7 @@ async def main():
     
     # 示例：注册账号
     success = await registry.register_account(
-        target_url="https://example.com/register",
+        target_url="https://ipfighter.com/en",
         email="test@example.com",
         password="YourPassword123"
     )

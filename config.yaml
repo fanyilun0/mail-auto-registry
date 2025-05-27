@@ -19,11 +19,13 @@ captcha:
 
 # 邮箱配置
 email:
-  provider: proton.me
-  imap_server: imap.proton.me
+  provider: gmail.com
+  imap_server: imap.gmail.com
   imap_port: 993
   username: ${EMAIL_USERNAME}
   password: ${EMAIL_PASSWORD}
+  auth_method: app_password  # Gmail应用密码
+  timeout: 120
 
 # 日志配置
 logging:

@@ -1,6 +1,7 @@
 import imaplib
 import email
 import re
+import time
 from email.header import decode_header
 from typing import Optional, List, Dict
 import asyncio
@@ -25,14 +26,17 @@ class EmailHandler:
     def connect(self):
         """连接到IMAP服务器"""
         try:
+            username = os.getenv('EMAIL_USERNAME')
+            password = os.getenv('EMAIL_PASSWORD')
+            
+            if not username or not password:
+                raise ValueError("邮箱用户名或密码未设置，请检查.env文件中的EMAIL_USERNAME和EMAIL_PASSWORD")
+            
             self.imap = imaplib.IMAP4_SSL(
                 self.config['imap_server'],
                 self.config['imap_port']
             )
-            self.imap.login(
-                os.getenv('EMAIL_USERNAME'),
-                os.getenv('EMAIL_PASSWORD')
-            )
+            self.imap.login(username, password)
             logger.info("已连接到邮件服务器")
         except Exception as e:
             logger.error(f"邮件服务器连接失败: {str(e)}")
