@@ -1,6 +1,6 @@
 # 代理配置
 proxy:
-  enabled: true
+  enabled: false
   type: http  # http 或 socks5
   rotation_interval: 300  # 代理轮换间隔（秒）
   check_timeout: 10  # 代理检测超时时间（秒）

@@ -52,3 +52,20 @@
    - 环境变量管理敏感信息
    - 实现请求频率控制
    - 自动化特征隐藏
+
+
+### 实际业务需求
+以https://app.polyflow.tech/为案例，完成使用浏览器自动化注册动作
+1. 导航到url并检索DOM结构
+```html
+<input class="mt-2 h-[46px] w-full rounded-xl border-none bg-[#454549] p-4 text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]" type="email" placeholder="Enter Email">
+```
+
+```html
+<div class="relative mt-2 flex h-[46px] w-full items-center rounded-xl border-none bg-[#454549] text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]"><input class="absolute left-0 top-0 h-[46px] w-full rounded-xl border-none bg-[#454549] p-4 text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]" type="number" placeholder="Enter Code" style="padding: 1rem;"><button class="absolute right-[10px] flex h-7 w-[60px] items-center justify-center rounded-md bg-[#8A8B8D] text-black">Send</button></div>
+```
+需要在打开的浏览器去输入指定的邮件地址然后点击send再配合IMAP获取到验证码后完成登录， 登录后获取数据
+
+获取localStorage中的token并保存到本地
+
+需要尽量抽离为单独的模块来实现， 方便后续迁移
