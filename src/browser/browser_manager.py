@@ -20,23 +20,33 @@ class BrowserManager:
         with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)['browser']
     
-    async def initialize(self):
+    async def initialize(self, proxy_url: str = None):
         """初始化浏览器实例池"""
-        self.playwright = await async_playwright().start()
-        for _ in range(self.config['pool_size']):
-            browser = await self.playwright.chromium.launch(
-                headless=self.config['headless']
-            )
+        if not self.playwright:
+            self.playwright = await async_playwright().start()
+        
+        # 只创建一个浏览器实例用于测试
+        if not self.browsers:
+            launch_options = {
+                'headless': self.config['headless']
+            }
+            
+            # 如果提供了代理，添加代理配置
+            if proxy_url:
+                launch_options['proxy'] = {'server': proxy_url}
+                logger.info(f"使用代理: {proxy_url}")
+            
+            browser = await self.playwright.chromium.launch(**launch_options)
             self.browsers.append(browser)
             logger.info("浏览器实例已创建")
     
-    async def get_page(self) -> Optional[Page]:
+    async def get_page(self, proxy_url: str = None) -> Optional[Page]:
         """获取可用的页面实例"""
         if not self.pages:
             if not self.browsers:
-                await self.initialize()
+                await self.initialize(proxy_url)
             
-            browser = random.choice(self.browsers)
+            browser = self.browsers[0]  # 使用第一个浏览器实例
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'

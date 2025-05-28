@@ -13,6 +13,9 @@ class ProxyManager:
         self.current_proxy: Optional[Dict] = None
         self.last_rotation: datetime = datetime.now()
         
+        # 添加默认测试代理
+        self.add_default_proxy()
+        
     def _load_config(self, config_path: str) -> dict:
         """加载配置文件"""
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -71,6 +74,19 @@ class ProxyManager:
         """移除代理"""
         self.proxies = [p for p in self.proxies if not (p['host'] == host and p['port'] == port)]
         logger.info(f"移除代理: {host}:{port}")
+    
+    def add_default_proxy(self):
+        """添加默认测试代理"""
+        # 根据step-by-step-verification.md的要求，默认使用http://127.0.0.1:7890
+        default_proxy = {
+            'host': '127.0.0.1',
+            'port': 7890,
+            'username': None,
+            'password': None
+        }
+        self.proxies.append(default_proxy)
+        self.current_proxy = default_proxy
+        logger.info("已添加默认代理: http://127.0.0.1:7890")
     
     def get_proxy_url(self) -> Optional[str]:
         """获取当前代理的URL格式"""
