@@ -12,7 +12,9 @@ import os
 from dotenv import load_dotenv
 
 class EmailHandler:
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self):
+        # absolute path of config.yaml
+        config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
         self.config = self._load_config(config_path)
         load_dotenv()
         self.imap = None

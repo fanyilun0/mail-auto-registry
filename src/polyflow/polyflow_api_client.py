@@ -2,28 +2,132 @@ import asyncio
 import aiohttp
 import os
 import json
+import random
+import time
 from datetime import datetime, timezone
 from loguru import logger
 from typing import Optional, Dict, List
-import time
+import ssl
 
 class PolyflowAPIClient:
     """Polyflow API客户端，用于通过API进行自动注册"""
     
-    def __init__(self, email_handler):
+    def __init__(self, email_handler, proxy_list: List[str] = None):
         self.email_handler = email_handler
         self.base_url = "https://api-v2.polyflow.tech"
         self.session = None
+        self.proxy_list = proxy_list or []
+        self.current_proxy = None
+        
+        # 真实浏览器User-Agent列表
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ]
+        
+    def _get_random_headers(self) -> Dict[str, str]:
+        """生成随机的真实浏览器请求头"""
+        user_agent = random.choice(self.user_agents)
+        
+        headers = {
+            'User-Agent': user_agent,
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Content-Type': 'application/json',
+            'Origin': 'https://app.polyflow.tech',
+            'Referer': 'https://app.polyflow.tech/',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Connection': 'keep-alive',
+            'DNT': '1'
+        }
+        
+        # 随机添加一些可选的请求头
+        optional_headers = {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-GPC': '1'
+        }
+        
+        # 随机选择添加一些可选请求头
+        for key, value in optional_headers.items():
+            if random.random() > 0.5:
+                headers[key] = value
+                
+        return headers
+    
+    def _get_random_proxy(self) -> Optional[str]:
+        """获取随机代理"""
+        if not self.proxy_list:
+            return None
+        return random.choice(self.proxy_list)
+    
+    @staticmethod
+    def load_proxy_list(proxy_file_path: str = "src/polyflow/proxies.txt") -> List[str]:
+        """从文件加载代理列表"""
+        proxies = []
+        try:
+            if os.path.exists(proxy_file_path):
+                with open(proxy_file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            # 支持格式: http://ip:port 或 ip:port
+                            if not line.startswith('http'):
+                                line = f"http://{line}"
+                            proxies.append(line)
+                logger.info(f"从 {proxy_file_path} 加载了 {len(proxies)} 个代理")
+            else:
+                logger.info(f"代理文件 {proxy_file_path} 不存在，将不使用代理")
+        except Exception as e:
+            logger.error(f"读取代理文件时发生错误: {str(e)}")
+        
+        return proxies
         
     async def __aenter__(self):
         """异步上下文管理器入口"""
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
-            headers={
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+        # 加载代理列表
+        if not self.proxy_list:
+            self.proxy_list = self.load_proxy_list()
+        
+        # 选择代理
+        self.current_proxy = self._get_random_proxy()
+        if self.current_proxy:
+            logger.info(f"使用代理: {self.current_proxy}")
+        
+        # 创建SSL上下文，允许不安全的连接
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # 创建连接器
+        connector = aiohttp.TCPConnector(
+            ssl=ssl_context,
+            limit=100,
+            limit_per_host=30,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
         )
+        
+        # 创建会话，代理在请求时设置
+        self.session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=60, connect=30),
+            headers=self._get_random_headers(),
+            cookie_jar=aiohttp.CookieJar()
+        )
+        
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -32,7 +136,7 @@ class PolyflowAPIClient:
             await self.session.close()
     
     @staticmethod
-    def load_email_list(email_file_path: str = "src/sites/email.txt") -> List[str]:
+    def load_email_list(email_file_path: str = "src/polyflow/email.txt") -> List[str]:
         """从email.txt文件加载邮箱地址列表"""
         emails = []
         try:
@@ -50,6 +154,90 @@ class PolyflowAPIClient:
         
         return emails
     
+    async def _make_request_with_retry(self, method: str, url: str, **kwargs) -> Dict[str, any]:
+        """带重试机制的请求方法"""
+        max_retries = 3
+        base_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                # 随机延迟，模拟人类行为
+                if attempt > 0:
+                    delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
+                    logger.info(f"第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
+                    await asyncio.sleep(delay)
+                    
+                    # 更换代理和请求头
+                    if self.proxy_list and len(self.proxy_list) > 1:
+                        old_proxy = self.current_proxy
+                        self.current_proxy = self._get_random_proxy()
+                        if self.current_proxy != old_proxy:
+                            logger.info(f"更换代理: {self.current_proxy}")
+                    
+                    # 更新请求头
+                    new_headers = self._get_random_headers()
+                    for key, value in new_headers.items():
+                        self.session.headers[key] = value
+                
+                # 添加随机延迟模拟人类行为
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+                
+                logger.info(f"发送请求到: {url}")
+                
+                # 设置代理（如果有的话）
+                request_kwargs = kwargs.copy()
+                if self.current_proxy:
+                    request_kwargs['proxy'] = self.current_proxy
+                
+                async with self.session.request(method, url, **request_kwargs) as response:
+                    
+                    # 记录响应信息
+                    logger.info(f"响应状态码: {response.status}")
+                    logger.info(f"响应头: {dict(response.headers)}")
+                    
+                    # 尝试解析响应
+                    content_type = response.headers.get('content-type', '').lower()
+                    
+                    if 'application/json' in content_type:
+                        response_data = await response.json()
+                    elif 'text/' in content_type:
+                        text_content = await response.text()
+                        logger.warning(f"收到文本响应而非JSON: {text_content[:500]}...")
+                        
+                        # 尝试解析为JSON（有些API返回text/plain但内容是JSON）
+                        try:
+                            response_data = json.loads(text_content)
+                            logger.info("成功将文本内容解析为JSON")
+                        except json.JSONDecodeError:
+                            # 如果不是JSON，进行错误分析
+                            if response.status == 403:
+                                if 'cloudflare' in text_content.lower():
+                                    return {"success": False, "error": "Cloudflare防护拦截", "status_code": response.status}
+                                elif 'access denied' in text_content.lower():
+                                    return {"success": False, "error": "访问被拒绝", "status_code": response.status}
+                                else:
+                                    return {"success": False, "error": "403 Forbidden - 可能需要更多反爬虫措施", "status_code": response.status}
+                            
+                            response_data = {"error": "非JSON响应", "content": text_content[:1000]}
+                    else:
+                        response_data = {"error": "未知内容类型", "content_type": content_type}
+                    
+                    if response.status == 200:
+                        return {"success": True, "data": response_data, "status_code": response.status}
+                    else:
+                        return {"success": False, "error": response_data, "status_code": response.status}
+                        
+            except aiohttp.ClientError as e:
+                logger.error(f"请求异常 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    return {"success": False, "error": f"网络请求失败: {str(e)}"}
+            except Exception as e:
+                logger.error(f"未知异常 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    return {"success": False, "error": f"请求异常: {str(e)}"}
+        
+        return {"success": False, "error": "所有重试都失败了"}
+    
     async def send_verification_code(self, email: str) -> Dict[str, any]:
         """发送验证码到邮箱"""
         url = f"{self.base_url}/api/account/email/send"
@@ -58,21 +246,15 @@ class PolyflowAPIClient:
             "type": "login"
         }
         
-        try:
-            logger.info(f"正在向 {email} 发送验证码...")
-            async with self.session.post(url, json=payload) as response:
-                response_data = await response.json()
-                
-                if response.status == 200:
-                    logger.info(f"验证码发送成功: {email}")
-                    return {"success": True, "data": response_data}
-                else:
-                    logger.error(f"验证码发送失败: {email}, 状态码: {response.status}, 响应: {response_data}")
-                    return {"success": False, "error": f"HTTP {response.status}: {response_data}"}
-                    
-        except Exception as e:
-            logger.error(f"发送验证码时发生异常: {email}, 错误: {str(e)}")
-            return {"success": False, "error": str(e)}
+        logger.info(f"正在向 {email} 发送验证码...")
+        result = await self._make_request_with_retry('POST', url, json=payload)
+        
+        if result["success"]:
+            logger.info(f"验证码发送成功: {email}")
+        else:
+            logger.error(f"验证码发送失败: {email}, 错误: {result['error']}")
+            
+        return result
     
     async def login_with_code(self, email: str, code: str, referral_code: str = "") -> Dict[str, any]:
         """使用验证码登录"""
@@ -83,21 +265,15 @@ class PolyflowAPIClient:
             "referral_code": referral_code
         }
         
-        try:
-            logger.info(f"正在使用验证码登录: {email}")
-            async with self.session.post(url, json=payload) as response:
-                response_data = await response.json()
-                
-                if response.status == 200 and response_data.get("success"):
-                    logger.info(f"登录成功: {email}")
-                    return {"success": True, "data": response_data}
-                else:
-                    logger.error(f"登录失败: {email}, 状态码: {response.status}, 响应: {response_data}")
-                    return {"success": False, "error": f"HTTP {response.status}: {response_data}"}
-                    
-        except Exception as e:
-            logger.error(f"登录时发生异常: {email}, 错误: {str(e)}")
-            return {"success": False, "error": str(e)}
+        logger.info(f"正在使用验证码登录: {email}")
+        result = await self._make_request_with_retry('POST', url, json=payload)
+        
+        if result["success"]:
+            logger.info(f"登录成功: {email}")
+        else:
+            logger.error(f"登录失败: {email}, 错误: {result['error']}")
+            
+        return result
     
     async def get_verification_code_async(self, timeout: int = 120) -> Optional[str]:
         """异步获取验证码"""
@@ -268,8 +444,10 @@ class PolyflowAPIClient:
                 
                 # 在处理下一个邮箱前等待
                 if i < len(emails):
-                    logger.info(f"等待 {delay_between_requests} 秒后处理下一个邮箱...")
-                    await asyncio.sleep(delay_between_requests)
+                    # 随机延迟，避免被检测
+                    actual_delay = delay_between_requests + random.uniform(-2, 5)
+                    logger.info(f"等待 {actual_delay:.1f} 秒后处理下一个邮箱...")
+                    await asyncio.sleep(actual_delay)
                     
             except Exception as e:
                 logger.error(f"处理邮箱 {email} 时发生异常: {str(e)}")

@@ -28,11 +28,20 @@ async def main():
         # 初始化邮件处理器
         email_handler = EmailHandler()
         
+        # 加载代理列表（可选）
+        proxy_list_path = os.path.join(os.path.dirname(__file__), "../src/polyflow/proxies.txt")
+        proxy_list = PolyflowAPIClient.load_proxy_list(proxy_list_path)
+        if proxy_list:
+            logger.info(f"加载了 {len(proxy_list)} 个代理")
+        else:
+            logger.info("未使用代理，将直接连接")
+        
         # 使用异步上下文管理器创建API客户端
-        async with PolyflowAPIClient(email_handler) as api_client:
+        async with PolyflowAPIClient(email_handler, proxy_list) as api_client:
             
             # 加载邮箱列表
-            emails = api_client.load_email_list()
+            email_list_path = os.path.join(os.path.dirname(__file__), "../src/polyflow/email.txt")
+            emails = api_client.load_email_list(email_list_path)
             if not emails:
                 logger.error("没有找到可用的邮箱地址")
                 return
@@ -76,43 +85,6 @@ async def main():
     finally:
         logger.info("程序结束")
 
-async def test_single_registration():
-    """测试单个邮箱注册"""
-    try:
-        logger.info("=== 测试单个邮箱注册 ===")
-        
-        # 初始化邮件处理器
-        email_handler = EmailHandler()
-        
-        # 使用异步上下文管理器创建API客户端
-        async with PolyflowAPIClient(email_handler) as api_client:
-            
-            # 加载邮箱列表并取第一个进行测试
-            emails = api_client.load_email_list()
-            if not emails:
-                logger.error("没有找到可用的邮箱地址")
-                return
-            
-            test_email = emails[0]
-            logger.info(f"使用测试邮箱: {test_email}")
-            
-            # 执行单个注册
-            result = await api_client.register_account(test_email)
-            
-            if result['success']:
-                logger.info(f"✅ 测试注册成功: {test_email}")
-                logger.info(f"Token: {result['token'][:50]}...")
-            else:
-                logger.error(f"❌ 测试注册失败: {result['error']}")
-        
-    except Exception as e:
-        logger.error(f"测试过程中发生错误: {str(e)}")
-
 if __name__ == "__main__":
-    # 检查命令行参数
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        # 运行单个测试
-        asyncio.run(test_single_registration())
-    else:
-        # 运行批量注册
-        asyncio.run(main()) 
+    # 运行批量注册
+    asyncio.run(main()) 
