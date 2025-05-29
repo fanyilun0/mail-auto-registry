@@ -5,7 +5,7 @@ from proxy.proxy_manager import ProxyManager
 from browser.browser_manager import BrowserManager
 from email_handler import EmailHandler
 from captcha.captcha_solver import CaptchaSolver
-from sites.polyflow_registry import PolyflowRegistry
+from polyflow.polyflow_registry import PolyflowRegistry
 from dotenv import load_dotenv
 import yaml
 import json
@@ -66,7 +66,7 @@ class AutoRegistry:
             
             if result['success']:
                 logger.info(f"Polyflow账号注册成功: {email}")
-                logger.info(f"Token: {result['token'][:20] if result['token'] else 'None'}...")
+                logger.info(f"Token: {result['token'][:50] if result['token'] else 'None'}...")
             else:
                 logger.error(f"Polyflow账号注册失败: {result['error']}")
             
@@ -81,6 +81,84 @@ class AutoRegistry:
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
             }
+
+    async def batch_register_polyflow_accounts(self, email_file_path: str = "sites/email.txt") -> dict:
+        """批量注册Polyflow账号"""
+        logger.info("开始批量注册Polyflow账号")
+        
+        # 加载邮箱列表
+        emails = PolyflowRegistry.load_email_list(email_file_path)
+        if not emails:
+            logger.error("没有找到可用的邮箱地址")
+            return {
+                'total': 0,
+                'success': 0,
+                'failed': 0,
+                'results': []
+            }
+        
+        results = {
+            'total': len(emails),
+            'success': 0,
+            'failed': 0,
+            'results': []
+        }
+        
+        logger.info(f"准备注册 {len(emails)} 个账号")
+        
+        # 清空之前的tokens.txt文件
+        tokens_file = "data/tokens.txt"
+        if os.path.exists(tokens_file):
+            os.remove(tokens_file)
+            logger.info("已清空之前的tokens.txt文件")
+        
+        for i, email in enumerate(emails, 1):
+            logger.info(f"正在处理第 {i}/{len(emails)} 个邮箱: {email}")
+            
+            try:
+                result = await self.register_polyflow_account(email)
+                results['results'].append(result)
+                
+                if result['success']:
+                    results['success'] += 1
+                    logger.info(f"✅ {email} 注册成功")
+                else:
+                    results['failed'] += 1
+                    logger.error(f"❌ {email} 注册失败: {result['error']}")
+                
+                # 在每次注册之间添加延迟，避免过于频繁的请求
+                if i < len(emails):  # 不是最后一个
+                    delay = self.config.get('security', {}).get('request_delay', 2)
+                    logger.info(f"等待 {delay} 秒后继续下一个注册...")
+                    await asyncio.sleep(delay)
+                    
+            except Exception as e:
+                logger.error(f"处理邮箱 {email} 时发生异常: {str(e)}")
+                results['failed'] += 1
+                results['results'].append({
+                    'success': False,
+                    'email': email,
+                    'token': None,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # 输出批量注册结果
+        logger.info("=" * 60)
+        logger.info("📊 批量注册结果统计")
+        logger.info("=" * 60)
+        logger.info(f"总计邮箱: {results['total']}")
+        logger.info(f"成功注册: {results['success']}")
+        logger.info(f"注册失败: {results['failed']}")
+        logger.info(f"成功率: {(results['success']/results['total']*100):.1f}%")
+        
+        # 检查tokens.txt文件
+        if os.path.exists(tokens_file):
+            with open(tokens_file, 'r', encoding='utf-8') as f:
+                token_lines = f.readlines()
+            logger.info(f"📁 tokens.txt文件包含 {len(token_lines)} 个token")
+        
+        return results
 
     async def register_account(self, target_url: str, email: str, password: str):
         """注册新账号（通用方法，保持向后兼容）"""
@@ -165,7 +243,8 @@ async def main():
         logger.info("   EMAIL_PASSWORD=your_app_password")
         logger.info("   TEST_EMAIL=your_test_email@gmail.com")
         logger.info("3. 如果使用Gmail，需要生成应用密码")
-        logger.info("4. 运行测试: python test_polyflow.py")
+        logger.info("4. 配置邮箱列表: 编辑 src/sites/email.txt")
+        logger.info("5. 运行批量注册: python main.py")
         logger.info("")
         logger.info("💡 当前可以运行基本功能验证: python test_basic.py")
         return
@@ -173,19 +252,33 @@ async def main():
     # 创建自动注册实例
     registry = AutoRegistry()
     
-    # 示例：注册Polyflow账号
-    test_email = os.getenv('TEST_EMAIL', email_username)
-    
-    logger.info("开始Polyflow账号注册测试")
-    result = await registry.register_polyflow_account(test_email)
-    
-    if result['success']:
-        logger.info("✅ Polyflow注册流程完成")
-        logger.info(f"📧 邮箱: {result['email']}")
-        logger.info(f"🔑 Token: {result['token'][:50] if result['token'] else 'None'}...")
+    # 检查是否存在邮箱配置文件
+    email_file = "sites/email.txt"
+    if os.path.exists(email_file):
+        logger.info("🚀 开始批量注册Polyflow账号")
+        results = await registry.batch_register_polyflow_accounts(email_file)
+        
+        if results['success'] > 0:
+            logger.info("✅ 批量注册完成")
+            logger.info(f"📧 成功注册: {results['success']} 个账号")
+            logger.info(f"❌ 注册失败: {results['failed']} 个账号")
+            logger.info("📁 Token已保存到: data/tokens.txt")
+        else:
+            logger.error("❌ 批量注册失败，没有成功注册任何账号")
     else:
-        logger.error("❌ Polyflow注册流程失败")
-        logger.error(f"错误信息: {result['error']}")
+        # 单个账号注册（向后兼容）
+        test_email = os.getenv('TEST_EMAIL', email_username)
+        
+        logger.info("开始单个Polyflow账号注册测试")
+        result = await registry.register_polyflow_account(test_email)
+        
+        if result['success']:
+            logger.info("✅ Polyflow注册流程完成")
+            logger.info(f"📧 邮箱: {result['email']}")
+            logger.info(f"🔑 Token: {result['token'][:50] if result['token'] else 'None'}...")
+        else:
+            logger.error("❌ Polyflow注册流程失败")
+            logger.error(f"错误信息: {result['error']}")
     
     # 关闭资源
     await registry.close()

@@ -15,6 +15,40 @@ class PolyflowRegistry:
         self.email_handler = email_handler
         self.base_url = "https://app.polyflow.tech/"
         
+    @staticmethod
+    def load_email_list(email_file_path: str = "sites/email.txt") -> list:
+        """从email.txt文件加载邮箱地址列表"""
+        emails = []
+        try:
+            with open(email_file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过空行和注释行
+                    if line and not line.startswith('#'):
+                        emails.append(line)
+            logger.info(f"从 {email_file_path} 加载了 {len(emails)} 个邮箱地址")
+        except FileNotFoundError:
+            logger.error(f"邮箱配置文件 {email_file_path} 不存在")
+        except Exception as e:
+            logger.error(f"读取邮箱配置文件时发生错误: {str(e)}")
+        
+        return emails
+    
+    @staticmethod
+    def save_token_to_batch_file(email: str, token: str, tokens_file_path: str = "data/tokens.txt"):
+        """批量保存token到tokens.txt文件"""
+        try:
+            os.makedirs(os.path.dirname(tokens_file_path), exist_ok=True)
+            
+            # 以追加模式写入文件
+            with open(tokens_file_path, 'a', encoding='utf-8') as f:
+                f.write(f"{email}:{token}\n")
+                
+            logger.info(f"Token已保存到批量文件: {tokens_file_path}")
+            
+        except Exception as e:
+            logger.error(f"保存token到批量文件时发生错误: {str(e)}")
+        
     async def register_account(self, email: str) -> Dict[str, any]:
         """
         注册Polyflow账号
@@ -207,7 +241,7 @@ class PolyflowRegistry:
                 logger.info("按下回车键提交验证码")
             
             # 等待页面跳转或状态变化
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(5000)  # 增加等待时间确保登录完成
             
             # 检查是否登录成功（通过URL变化或特定元素出现）
             current_url = page.url
@@ -220,7 +254,10 @@ class PolyflowRegistry:
                 result['success'] = True
                 logger.info("成功获取到token")
                 
-                # 保存token到本地文件
+                # 保存token到批量文件
+                self.save_token_to_batch_file(email, token)
+                
+                # 同时保存到单独的JSON文件（保持向后兼容）
                 await self._save_token_to_file(email, token)
                 
             else:
@@ -251,34 +288,71 @@ class PolyflowRegistry:
     async def _extract_token(self, page: Page) -> Optional[str]:
         """从localStorage中提取token"""
         try:
-            # 尝试多种可能的token键名
+            # 首先尝试获取'token'键 - 这是用户明确要求的
+            token = await page.evaluate('() => localStorage.getItem("token")')
+            if token:
+                logger.info(f"找到token (键名: token): {token[:50]}...")
+                return token
+            
+            logger.warning("localStorage中没有找到'token'键，这是正常的，因为Polyflow是Web3应用")
+            
+            # 如果没有找到'token'键，尝试其他可能的键名
             token_keys = [
-                'token',
                 'authToken',
                 'accessToken',
                 'jwt',
                 'auth_token',
                 'user_token',
-                'polyflow_token'
+                'polyflow_token',
+                'session_token'
             ]
             
             for key in token_keys:
                 token = await page.evaluate(f'() => localStorage.getItem("{key}")')
                 if token:
-                    logger.info(f"找到token (键名: {key}): {token[:20]}...")
+                    logger.info(f"找到token (键名: {key}): {token[:50]}...")
                     return token
             
-            # 如果没有找到特定键名的token，获取所有localStorage内容
+            # 如果没有找到特定键名的token，获取所有localStorage内容进行分析
             all_storage = await page.evaluate('() => JSON.stringify(localStorage)')
             logger.info(f"localStorage内容: {all_storage}")
             
-            # 尝试从所有存储中找到看起来像token的值
+            # 检查是否有任何看起来像token的值
             storage_data = json.loads(all_storage)
+            
+            # 对于Polyflow这样的Web3应用，wagmi.store包含了用户的连接状态
+            # 这实际上就是用户的"登录凭证"
+            wagmi_store = storage_data.get('wagmi.store')
+            if wagmi_store:
+                logger.info("找到Web3钱包状态 (wagmi.store)，这是Polyflow的登录凭证")
+                return wagmi_store
+            
+            # 首先查找JWT格式的token (必须包含两个点且长度大于20)
             for key, value in storage_data.items():
-                if isinstance(value, str) and len(value) > 20 and ('.' in value or len(value) > 50):
-                    logger.info(f"可能的token (键名: {key}): {value[:20]}...")
+                if isinstance(value, str) and value.count('.') >= 2 and len(value) > 20:
+                    logger.warning(f"找到可能的JWT token (键名: {key}): {value[:50]}...")
                     return value
-                    
+            
+            # 然后查找长字符串token (长度必须大于50)
+            for key, value in storage_data.items():
+                if isinstance(value, str) and len(value) > 50:
+                    logger.warning(f"找到可能的长字符串token (键名: {key}): {value[:50]}...")
+                    return value
+            
+            # 最后检查是否有JSON格式的复杂对象可能包含token信息
+            for key, value in storage_data.items():
+                if isinstance(value, str) and value.startswith('{') and len(value) > 30:
+                    try:
+                        parsed = json.loads(value)
+                        if isinstance(parsed, dict):
+                            logger.warning(f"找到可能的JSON token对象 (键名: {key}): {value[:50]}...")
+                            return value
+                    except:
+                        continue
+            
+            logger.error("localStorage中没有找到任何看起来像token的值")
+            return None
+                        
         except Exception as e:
             logger.error(f"提取token时发生错误: {str(e)}")
             
