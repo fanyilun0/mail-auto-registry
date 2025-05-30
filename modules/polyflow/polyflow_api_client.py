@@ -12,12 +12,13 @@ import ssl
 class PolyflowAPIClient:
     """Polyflow API客户端，用于通过API进行自动注册"""
     
-    def __init__(self, email_handler, proxy_list: List[str] = None):
+    def __init__(self, email_handler, proxy_list: List[str] = None, config_manager=None):
         self.email_handler = email_handler
         self.base_url = "https://api-v2.polyflow.tech"
         self.session = None
         self.proxy_list = proxy_list or []
         self.current_proxy = None
+        self.config_manager = config_manager
         
         # 真实浏览器User-Agent列表
         self.user_agents = [
@@ -74,8 +75,46 @@ class PolyflowAPIClient:
         return random.choice(self.proxy_list)
     
     @staticmethod
-    def load_proxy_list(proxy_file_path: str = "src/polyflow/proxies.txt") -> List[str]:
+    def load_email_list(email_file_path: str = None) -> List[str]:
+        """从email.txt文件加载邮箱地址列表"""
+        # 自动检测执行路径并调整文件路径
+        if email_file_path is None:
+            # 检查当前工作目录
+            current_dir = os.getcwd()
+            if current_dir.endswith('/src'):
+                # 在src目录下执行
+                email_file_path = "polyflow/email.txt"
+            else:
+                # 在项目根目录执行
+                email_file_path = "src/polyflow/email.txt"
+        
+        emails = []
+        try:
+            with open(email_file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过空行和注释行
+                    if line and not line.startswith('#'):
+                        emails.append(line)
+            logger.info(f"从 {email_file_path} 加载了 {len(emails)} 个邮箱地址")
+        except FileNotFoundError:
+            logger.error(f"邮箱配置文件 {email_file_path} 不存在")
+        except Exception as e:
+            logger.error(f"读取邮箱配置文件时发生错误: {str(e)}")
+        
+        return emails
+    
+    @staticmethod
+    def load_proxy_list(proxy_file_path: str = None) -> List[str]:
         """从文件加载代理列表"""
+        # 自动检测执行路径并调整文件路径
+        if proxy_file_path is None:
+            current_dir = os.getcwd()
+            if current_dir.endswith('/src'):
+                proxy_file_path = "polyflow/proxies.txt"
+            else:
+                proxy_file_path = "src/polyflow/proxies.txt"
+        
         proxies = []
         try:
             if os.path.exists(proxy_file_path):
@@ -134,25 +173,6 @@ class PolyflowAPIClient:
         """异步上下文管理器退出"""
         if self.session:
             await self.session.close()
-    
-    @staticmethod
-    def load_email_list(email_file_path: str = "src/polyflow/email.txt") -> List[str]:
-        """从email.txt文件加载邮箱地址列表"""
-        emails = []
-        try:
-            with open(email_file_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    # 跳过空行和注释行
-                    if line and not line.startswith('#'):
-                        emails.append(line)
-            logger.info(f"从 {email_file_path} 加载了 {len(emails)} 个邮箱地址")
-        except FileNotFoundError:
-            logger.error(f"邮箱配置文件 {email_file_path} 不存在")
-        except Exception as e:
-            logger.error(f"读取邮箱配置文件时发生错误: {str(e)}")
-        
-        return emails
     
     async def _make_request_with_retry(self, method: str, url: str, **kwargs) -> Dict[str, any]:
         """带重试机制的请求方法"""
@@ -284,9 +304,22 @@ class PolyflowAPIClient:
             timeout
         )
     
-    def save_token_data(self, email: str, token_data: Dict, tokens_file_path: str = "data/polyflow_tokens.txt"):
+    def save_token_data(self, email: str, token_data: Dict, tokens_file_path: str = None):
         """保存token数据到文件"""
         try:
+            # 使用配置管理器获取保存路径
+            if tokens_file_path is None:
+                if self.config_manager:
+                    tokens_file_path = self.config_manager.get_tokens_file_path()
+                else:
+                    # 兼容旧的路径检测方式
+                    current_dir = os.getcwd()
+                    if current_dir.endswith('/src'):
+                        tokens_file_path = "../data/polyflow_tokens.txt"
+                    else:
+                        tokens_file_path = "data/polyflow_tokens.txt"
+            
+            # 确保目录存在
             os.makedirs(os.path.dirname(tokens_file_path), exist_ok=True)
             
             # 提取token信息
@@ -304,11 +337,23 @@ class PolyflowAPIClient:
             # 构建数据行：email|token|expire
             data_line = f"{email}|{token}|{expiry_str}\n"
             
+            # 检查文件是否存在，如果不存在则添加表头
+            file_exists = os.path.exists(tokens_file_path)
+            
             # 以追加模式写入文件
             with open(tokens_file_path, 'a', encoding='utf-8') as f:
+                if not file_exists:
+                    # 添加表头
+                    f.write("# Polyflow Token数据\n")
+                    f.write("# 格式: email|token|expire\n")
+                    f.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("\n")
                 f.write(data_line)
                 
-            logger.info(f"Token数据已保存到: {tokens_file_path}")
+            logger.info(f"✅ Token数据已保存到: {tokens_file_path}")
+            logger.info(f"📧 邮箱: {email}")
+            logger.info(f"🔑 Token: {token[:50]}...")
+            logger.info(f"⏰ 过期时间: {expiry_str}")
             
             # 同时保存详细的JSON格式数据用于备份
             self._save_detailed_token_data(email, token_data)
@@ -319,21 +364,35 @@ class PolyflowAPIClient:
     def _save_detailed_token_data(self, email: str, token_data: Dict):
         """保存详细的token数据到JSON文件"""
         try:
-            os.makedirs('data/polyflow_tokens_detailed', exist_ok=True)
+            # 使用配置管理器获取保存路径
+            if self.config_manager:
+                detail_dir = self.config_manager.get_tokens_detail_dir_path()
+            else:
+                # 兼容旧的路径检测方式
+                current_dir = os.getcwd()
+                if current_dir.endswith('/src'):
+                    detail_dir = "../data/polyflow_tokens_detailed"
+                else:
+                    detail_dir = "data/polyflow_tokens_detailed"
+            
+            os.makedirs(detail_dir, exist_ok=True)
             
             detailed_data = {
                 'email': email,
                 'token_data': token_data,
                 'timestamp': datetime.now().isoformat(),
-                'site': 'polyflow.tech'
+                'site': 'polyflow.tech',
+                'registration_success': True
             }
             
-            filename = f"data/polyflow_tokens_detailed/{email.replace('@', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            # 使用安全的文件名
+            safe_email = email.replace('@', '_').replace('.', '_')
+            filename = f"{detail_dir}/{safe_email}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(detailed_data, f, indent=2, ensure_ascii=False)
                 
-            logger.info(f"详细token数据已保存到: {filename}")
+            logger.info(f"📄 详细token数据已保存到: {filename}")
             
         except Exception as e:
             logger.error(f"保存详细token数据时发生错误: {str(e)}")
@@ -367,29 +426,41 @@ class PolyflowAPIClient:
             self.email_handler.clear_used_codes()
             
             # 步骤1: 发送验证码
+            logger.info(f"步骤1: 向 {email} 发送验证码...")
             send_result = await self.send_verification_code(email)
             if not send_result["success"]:
                 result['error'] = f"发送验证码失败: {send_result['error']}"
                 return result
             
-            # 步骤2: 等待并获取验证码
-            logger.info(f"等待验证码到达邮箱: {email}")
-            await asyncio.sleep(5)  # 等待邮件到达
-            
-            verification_code = await self.get_verification_code_async(timeout=120)
-            if not verification_code:
-                result['error'] = "未能获取到验证码"
+            # 检查API响应是否为预期的成功格式
+            api_response = send_result.get("data", {})
+            if not (api_response.get("success") == True and "msg" in api_response):
+                result['error'] = f"API响应格式异常: {api_response}"
                 return result
             
-            logger.info(f"获取到验证码: {verification_code}")
+            logger.info(f"✅ 验证码发送成功，API响应: {api_response}")
             
-            # 步骤3: 使用验证码登录
+            # 步骤2: 等待邮件到达（增加等待时间确保邮件到达）
+            logger.info(f"步骤2: 等待验证码邮件到达...")
+            await asyncio.sleep(8)  # 增加等待时间到8秒
+            
+            # 步骤3: 获取验证码（增加超时时间）
+            logger.info(f"步骤3: 从邮箱读取验证码...")
+            verification_code = await self.get_verification_code_async(timeout=180)  # 增加到3分钟
+            if not verification_code:
+                result['error'] = "未能获取到验证码，请检查邮箱设置"
+                return result
+            
+            logger.info(f"✅ 成功获取验证码: {verification_code}")
+            
+            # 步骤4: 使用验证码登录
+            logger.info(f"步骤4: 使用验证码登录...")
             login_result = await self.login_with_code(email, verification_code, referral_code)
             if not login_result["success"]:
                 result['error'] = f"登录失败: {login_result['error']}"
                 return result
             
-            # 步骤4: 处理登录响应
+            # 步骤5: 处理登录响应
             response_data = login_result["data"]
             if response_data.get("success") and "msg" in response_data:
                 msg = response_data["msg"]
@@ -402,7 +473,8 @@ class PolyflowAPIClient:
                     # 保存token数据
                     self.save_token_data(email, response_data)
                     
-                    logger.info(f"账号注册成功: {email}")
+                    logger.info(f"🎉 账号注册成功: {email}")
+                    logger.info(f"Token: {token[:50]}...")
                 else:
                     result['error'] = "响应中未找到token"
             else:

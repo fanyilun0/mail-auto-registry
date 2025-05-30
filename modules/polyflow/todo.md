@@ -34,8 +34,7 @@ POST https://api-v2.polyflow.tech/api/account/email/login
 ### 代码要求：需要把API调用到逻辑用单独的文件来管理
 
 ------
-TODO：解决API调用403的问题
-## 优化调用API
+## 优化调用API解决API调用403的问题
 
 ### 现有的执行日志
 2025-05-29 21:41:11 | INFO     | __main__:log_test_result:46 - ❌ 失败 - API发送验证码: 发送验证码API调用异常: 403, message='Attempt to decode JSON with unexpected mimetype: text/html', url='https://api-v2.polyflow.tech/api/account/email/send'
@@ -50,3 +49,12 @@ TODO：解决API调用403的问题
 新增ployflow/proxies来添加代理避免
 
 --------
+
+TODO: 
+1. 解决提前读取邮件导致验证码不匹配的问题
+- 在发送send请求之后， 需要等待获取到回调之后再进行读取邮件的code
+请求成功的response： {"success":true,"msg":{}}
+
+2. 需要正确把所需要的数据保存到本地
+
+3. 我在 src路径下执行 % python polyflow_api_main.py， 解决潜在的犹豫执行路径不一致导致的路径/文件错误的问题

@@ -7,16 +7,12 @@
    - 在浏览器启动前配置代理
    - 实现代理轮换和失效检测
 
-2. 浏览器自动化
-   - 基于Playwright实现
-   - 元素定位策略：
-     * 优先使用CSS选择器
-     * 实现元素可交互状态等待
-     * 支持多定位策略回退
-   - 封装常见操作异常处理
+2. 自动化调用api
+   - 发送邮箱验证码接口
+   - 根据登录接口的要求发送email和code
 
 3. 邮件验证码处理
-   - 通过IMAP协议连接proton.me邮箱
+   - 通过IMAP协议连接Google邮箱
    - 验证码提取功能：
      * 正则匹配提取
      * 基于时间戳排序
@@ -28,7 +24,7 @@
    - 支持多类型验证码处理
 
 5. 数据管理
-   - Cookie持久化存储
+   - Cookie/Token持久化存储
    - 多格式数据导出(JSON/CSV)
    - 敏感信息加密
 
@@ -54,18 +50,36 @@
    - 自动化特征隐藏
 
 
-### 实际业务需求
-以https://app.polyflow.tech/为案例，完成使用浏览器自动化注册动作
-1. 导航到url并检索DOM结构
-```html
-<input class="mt-2 h-[46px] w-full rounded-xl border-none bg-[#454549] p-4 text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]" type="email" placeholder="Enter Email">
-```
-
-```html
-<div class="relative mt-2 flex h-[46px] w-full items-center rounded-xl border-none bg-[#454549] text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]"><input class="absolute left-0 top-0 h-[46px] w-full rounded-xl border-none bg-[#454549] p-4 text-sm font-normal placeholder-[#8A8B8D] md:h-[54px]" type="number" placeholder="Enter Code" style="padding: 1rem;"><button class="absolute right-[10px] flex h-7 w-[60px] items-center justify-center rounded-md bg-[#8A8B8D] text-black">Send</button></div>
-```
-需要在打开的浏览器去输入指定的邮件地址然后点击send再配合IMAP获取到验证码后完成登录， 登录后获取数据
-
-获取localStorage中的token并保存到本地
-
-需要尽量抽离为单独的模块来实现， 方便后续迁移
+### 项目文件结构
+.
+├── config.yaml
+├── config.yaml.backup
+├── data
+├── FINAL_POLYFLOW_TEST_REPORT.md
+├── logs
+│   ├── polyflow_api_2025-05-29.log
+│   └── verification.log
+├── README.md
+├── requirements.txt
+├── run_polyflow_test.sh
+├── run_polyflow.sh
+├── src
+│   ├── __pycache__
+│   ├── browser
+│   ├── captcha
+│   ├── email_handler.py
+│   ├── logs
+│   ├── polyflow
+      ├── email.txt
+      ├── polyflow_api_client.py
+      ├── polyflow_registry.py
+      ├── proxies.txt
+      ├── run_polyflow_test.sh
+      ├── run_polyflow.sh
+      └── todo.md
+│   ├── other-modules
+│   ├── polyflow_api_main.py
+│   ├── proxy
+│   ├── test_polyflow_requirements.py
+│   └── utils
+├── todo.md
