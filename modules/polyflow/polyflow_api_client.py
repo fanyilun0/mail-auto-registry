@@ -4,10 +4,19 @@ import os
 import json
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from loguru import logger
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import ssl
+import pytz
+from pathlib import Path
+
+# 导入配置加载器
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from utils.config_loader import ConfigLoader
+
+from gmail.email_handler import EmailHandler
 
 class PolyflowAPIClient:
     """Polyflow API客户端，用于通过API进行自动注册"""
@@ -20,6 +29,9 @@ class PolyflowAPIClient:
         self.current_proxy = None
         self.config_manager = config_manager
         
+        # 加载配置
+        self._load_config()
+        
         # 真实浏览器User-Agent列表
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -30,6 +42,40 @@ class PolyflowAPIClient:
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         ]
         
+    def _load_config(self):
+        """加载配置文件"""
+        try:
+            # 获取项目根目录的配置文件路径
+            current_dir = Path(__file__).parent.parent.parent
+            config_path = current_dir / "config.yaml"
+            
+            if config_path.exists():
+                config_loader = ConfigLoader(config_path)
+                self.timezone_config = config_loader.get_timezone_config()
+                logger.info(f"配置加载成功: 时区 {self.timezone_config['local_timezone']}")
+            else:
+                # 使用默认配置
+                self.timezone_config = {
+                    'local_timezone': 'Asia/Shanghai',
+                    'utc_offset_hours': 8
+                }
+                logger.warning(f"配置文件不存在，使用默认时区配置: {self.timezone_config['local_timezone']}")
+        except Exception as e:
+            # 使用默认配置
+            self.timezone_config = {
+                'local_timezone': 'Asia/Shanghai',
+                'utc_offset_hours': 8
+            }
+            logger.warning(f"加载配置失败，使用默认时区配置: {str(e)}")
+    
+    def _get_local_timezone(self):
+        """获取本地时区对象"""
+        try:
+            return pytz.timezone(self.timezone_config['local_timezone'])
+        except Exception as e:
+            logger.warning(f"获取时区失败，使用默认时区: {str(e)}")
+            return pytz.timezone('Asia/Shanghai')
+    
     def _get_random_headers(self) -> Dict[str, str]:
         """生成随机的真实浏览器请求头"""
         user_agent = random.choice(self.user_agents)
@@ -397,17 +443,16 @@ class PolyflowAPIClient:
         except Exception as e:
             logger.error(f"保存详细token数据时发生错误: {str(e)}")
     
-    async def register_account(self, email: str, referral_code: str = "", max_retries: int = 3) -> Dict[str, any]:
+    async def register_account(self, email: str, referral_code: str = "") -> Dict[str, any]:
         """
-        注册Polyflow账号的完整流程
+        注册单个账号的完整流程
         
         Args:
-            email: 注册邮箱
+            email: 邮箱地址
             referral_code: 推荐码（可选）
-            max_retries: 最大重试次数
             
         Returns:
-            Dict包含注册结果和token信息
+            注册结果字典
         """
         result = {
             'success': False,
@@ -422,42 +467,55 @@ class PolyflowAPIClient:
             if not self.email_handler.imap:
                 self.email_handler.connect()
             
-            # 清除之前的验证码记录
+            # 重要：完全清除之前的验证码记录和状态，避免获取到其他邮箱的验证码
             self.email_handler.clear_used_codes()
+            logger.info(f"🔄 开始处理邮箱: {email}")
+            logger.info(f"🧹 已清理验证码缓存，确保获取正确的验证码")
+            
+            # 记录发送验证码前的精确时间戳，用于严格过滤旧邮件
+            send_time = datetime.now()
+            logger.info(f"📅 记录发送时间: {send_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
             # 步骤1: 发送验证码
-            logger.info(f"步骤1: 向 {email} 发送验证码...")
+            logger.info(f"📧 步骤1: 向 {email} 发送验证码...")
             send_result = await self.send_verification_code(email)
             if not send_result["success"]:
                 result['error'] = f"发送验证码失败: {send_result['error']}"
+                logger.error(f"❌ {email} - {result['error']}")
                 return result
             
             # 检查API响应是否为预期的成功格式
             api_response = send_result.get("data", {})
             if not (api_response.get("success") == True and "msg" in api_response):
                 result['error'] = f"API响应格式异常: {api_response}"
+                logger.error(f"❌ {email} - {result['error']}")
                 return result
             
-            logger.info(f"✅ 验证码发送成功，API响应: {api_response}")
+            logger.info(f"✅ {email} - 验证码发送成功")
             
-            # 步骤2: 等待邮件到达（增加等待时间确保邮件到达）
-            logger.info(f"步骤2: 等待验证码邮件到达...")
-            await asyncio.sleep(8)  # 增加等待时间到8秒
+            # 步骤2: 等待邮件到达（增加等待时间，避免读取到旧邮件）
+            logger.info(f"⏳ 步骤2: 等待验证码邮件到达...")
+            logger.info(f"💤 等待15秒确保新邮件到达，避免读取旧验证码...")
+            await asyncio.sleep(15)  # 增加等待时间到15秒
             
-            # 步骤3: 获取验证码（增加超时时间）
-            logger.info(f"步骤3: 从邮箱读取验证码...")
-            verification_code = await self.get_verification_code_async(timeout=180)  # 增加到3分钟
+            # 步骤3: 获取验证码（使用发送时间过滤，确保获取最新验证码）
+            logger.info(f"🔍 步骤3: 从邮箱读取验证码...")
+            
+            # 使用发送时间作为严格过滤条件，确保获取正确的验证码
+            verification_code = await self.get_verification_code_for_email(email, timeout=180, send_time=send_time)
             if not verification_code:
-                result['error'] = "未能获取到验证码，请检查邮箱设置"
+                result['error'] = "未能获取到验证码，请检查邮箱设置或网络连接"
+                logger.error(f"❌ {email} - {result['error']}")
                 return result
             
-            logger.info(f"✅ 成功获取验证码: {verification_code}")
+            logger.info(f"✅ {email} - 成功获取验证码: {verification_code}")
             
             # 步骤4: 使用验证码登录
-            logger.info(f"步骤4: 使用验证码登录...")
+            logger.info(f"🔐 步骤4: 使用验证码登录...")
             login_result = await self.login_with_code(email, verification_code, referral_code)
             if not login_result["success"]:
                 result['error'] = f"登录失败: {login_result['error']}"
+                logger.error(f"❌ {email} - {result['error']}")
                 return result
             
             # 步骤5: 处理登录响应
@@ -473,22 +531,190 @@ class PolyflowAPIClient:
                     # 保存token数据
                     self.save_token_data(email, response_data)
                     
-                    logger.info(f"🎉 账号注册成功: {email}")
-                    logger.info(f"Token: {token[:50]}...")
+                    logger.info(f"🎉 {email} - 账号注册成功!")
+                    logger.info(f"🔑 Token: {token[:50]}...")
                 else:
                     result['error'] = "响应中未找到token"
+                    logger.error(f"❌ {email} - {result['error']}")
             else:
                 result['error'] = f"登录响应异常: {response_data}"
+                logger.error(f"❌ {email} - {result['error']}")
                 
         except Exception as e:
-            logger.error(f"注册过程发生错误: {email}, 错误: {str(e)}")
+            logger.error(f"❌ {email} - 注册过程发生错误: {str(e)}")
             result['error'] = str(e)
+            
+        finally:
+            # 确保每个邮箱处理完成后彻底清理状态
+            if hasattr(self, 'email_handler') and self.email_handler:
+                self.email_handler.clear_used_codes()
+                logger.info(f"🧹 {email} - 处理完成，已清理验证码缓存")
             
         return result
     
-    async def batch_register(self, emails: List[str], referral_code: str = "", delay_between_requests: int = 10) -> List[Dict]:
+    async def get_verification_code_for_email(self, email: str, timeout: int = 180, send_time: datetime = None) -> Optional[str]:
         """
-        批量注册账号
+        为特定邮箱获取验证码，避免验证码冲突
+        
+        Args:
+            email: 目标邮箱地址
+            timeout: 超时时间（秒）
+            send_time: 发送验证码的时间，用于过滤旧邮件
+            
+        Returns:
+            验证码字符串，如果获取失败返回None
+        """
+        logger.info(f"🔍 开始为 {email} 获取验证码，超时时间: {timeout}秒")
+        if send_time:
+            logger.info(f"📅 只获取 {send_time.strftime('%Y-%m-%d %H:%M:%S')} 之后的邮件")
+        
+        start_time = time.time()
+        last_email_count = 0
+        retry_count = 0
+        max_retries = int(timeout / 5)  # 每5秒重试一次
+        
+        # 获取本地时区
+        local_tz = self._get_local_timezone()
+        
+        while time.time() - start_time < timeout:
+            try:
+                retry_count += 1
+                logger.info(f"🔄 第 {retry_count}/{max_retries} 次尝试获取验证码...")
+                
+                # 刷新邮箱连接，确保获取最新邮件
+                if retry_count > 1:
+                    try:
+                        logger.info("🔄 刷新邮箱连接以获取最新邮件...")
+                        self.email_handler.imap.select('INBOX')  # 重新选择收件箱
+                    except Exception as e:
+                        logger.warning(f"刷新邮箱连接失败: {str(e)}")
+                
+                # 动态调整搜索时间范围
+                search_minutes = min(10, max(5, int((time.time() - start_time) / 60) + 5))
+                logger.info(f"📧 搜索最近 {search_minutes} 分钟的邮件...")
+                
+                # 搜索来自polyflow的最近邮件
+                email_ids = self.email_handler._search_recent_emails(
+                    sender_filter="polyflow",
+                    minutes=search_minutes
+                )
+                
+                if len(email_ids) != last_email_count:
+                    logger.info(f"📬 发现 {len(email_ids)} 封来自polyflow的邮件 (上次: {last_email_count})")
+                    last_email_count = len(email_ids)
+                else:
+                    logger.info(f"📬 邮件数量无变化: {len(email_ids)} 封")
+                
+                # 处理最新的邮件（增加检查数量）
+                found_new_email = False
+                valid_codes_found = []  # 记录找到的有效验证码
+                
+                for email_id in email_ids[:10]:  # 检查最新的10封邮件
+                    email_data = self.email_handler._get_email_content_with_timestamp(email_id)
+                    if email_data and email_data['content']:
+                        # 严格的时间过滤 - 必须有发送时间才进行处理
+                        if send_time and email_data['timestamp']:
+                            # 确保邮件时间在发送验证码之后
+                            email_time = email_data['timestamp']
+                            
+                            # 处理时区问题，统一转换为本地时间
+                            if email_time.tzinfo:
+                                # 如果邮件时间有时区信息，转换为本地时间
+                                email_time_local = email_time.astimezone(local_tz).replace(tzinfo=None)
+                            else:
+                                # 如果没有时区信息，假设是UTC时间，转换为本地时间
+                                email_time_local = email_time + timedelta(hours=self.timezone_config['utc_offset_hours'])
+                            
+                            # 严格的时间过滤：邮件时间必须在发送时间之后（允许30秒容差）
+                            time_diff = (email_time_local - send_time).total_seconds()
+                            
+                            if time_diff < -30:  # 邮件时间比发送时间早30秒以上，跳过
+                                logger.debug(f"⏭️ 跳过旧邮件: {email_data['subject']} (时差: {time_diff:.1f}秒)")
+                                continue
+                            elif time_diff > 300:  # 邮件时间比发送时间晚5分钟以上，可能是其他请求的邮件
+                                logger.debug(f"⏭️ 跳过过新邮件: {email_data['subject']} (时差: {time_diff:.1f}秒)")
+                                continue
+                            else:
+                                logger.info(f"📧 检查符合时间条件的邮件: {email_data['subject']} (时差: {time_diff:.1f}秒)")
+                                found_new_email = True
+                        else:
+                            # 如果没有发送时间，跳过处理（严格模式）
+                            logger.debug(f"⏭️ 跳过无时间戳的邮件: {email_data['subject']}")
+                            continue
+                        
+                        # 检查邮件内容是否与当前邮箱相关或是验证码邮件
+                        if email.lower() in email_data['content'].lower() or self._is_recent_verification_email(email_data['content']):
+                            code = self.email_handler._extract_verification_code(email_data['content'])
+                            if code and code not in self.email_handler.used_codes:
+                                valid_codes_found.append({
+                                    'code': code,
+                                    'subject': email_data['subject'],
+                                    'time_diff': time_diff
+                                })
+                                logger.info(f"🔍 发现有效验证码: {code} (时差: {time_diff:.1f}秒)")
+                            else:
+                                if code:
+                                    logger.warning(f"⚠️ 验证码 {code} 已被使用过，跳过")
+                
+                # 如果找到有效验证码，选择时间最接近的那个
+                if valid_codes_found:
+                    # 按时间差排序，选择最接近发送时间的验证码
+                    valid_codes_found.sort(key=lambda x: abs(x['time_diff']))
+                    best_code = valid_codes_found[0]
+                    
+                    # 标记验证码为已使用
+                    self.email_handler.used_codes.add(best_code['code'])
+                    logger.info(f"✅ 为 {email} 获取到验证码: {best_code['code']} (来自邮件: {best_code['subject']})")
+                    return best_code['code']
+                
+                # 如果没有找到新邮件，给出更详细的信息
+                if not found_new_email and send_time:
+                    elapsed_time = time.time() - start_time
+                    logger.info(f"⏳ 未找到 {email} 的新验证码 (已等待 {elapsed_time:.1f}秒)")
+                    
+                    # 如果等待时间超过60秒，记录详细信息但不降低标准
+                    if elapsed_time > 60:
+                        logger.warning(f"⚠️ 等待时间较长，但仍坚持严格的时间过滤标准")
+                        logger.warning(f"   发送时间: {send_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                        logger.warning(f"   当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # 等待一段时间后重试
+                wait_time = 5 if retry_count <= 6 else 10  # 前30秒每5秒重试，之后每10秒重试
+                logger.info(f"⏳ 等待 {wait_time} 秒后重试... (剩余时间: {timeout - (time.time() - start_time):.1f}秒)")
+                await asyncio.sleep(wait_time)
+                
+            except Exception as e:
+                logger.error(f"❌ 获取 {email} 验证码时发生错误: {str(e)}")
+                await asyncio.sleep(5)
+        
+        logger.error(f"❌ 获取 {email} 验证码超时（{timeout}秒）")
+        logger.error(f"💡 建议检查: 1) 邮件是否真的发送成功 2) 网络连接 3) Gmail设置")
+        return None
+    
+    def _is_recent_verification_email(self, content: str) -> bool:
+        """
+        检查是否是最近的验证码邮件
+        
+        Args:
+            content: 邮件内容
+            
+        Returns:
+            是否是验证码邮件
+        """
+        verification_keywords = [
+            'verification code',
+            'login code',
+            'polyflow',
+            'verify',
+            'code'
+        ]
+        
+        content_lower = content.lower()
+        return any(keyword in content_lower for keyword in verification_keywords)
+    
+    async def batch_register(self, emails: List[str], referral_code: str = "", delay_between_requests: int = 15) -> List[Dict]:
+        """
+        批量注册账号 - 确保每个邮箱完整流程完成后才处理下一个
         
         Args:
             emails: 邮箱地址列表
@@ -500,29 +726,51 @@ class PolyflowAPIClient:
         """
         results = []
         
-        logger.info(f"开始批量注册，共 {len(emails)} 个邮箱")
+        logger.info(f"🚀 开始批量注册，共 {len(emails)} 个邮箱")
+        logger.info(f"⚙️ 每个邮箱间隔: {delay_between_requests}秒")
         
         for i, email in enumerate(emails, 1):
-            logger.info(f"正在处理第 {i}/{len(emails)} 个邮箱: {email}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"📧 正在处理第 {i}/{len(emails)} 个邮箱: {email}")
+            logger.info(f"{'='*60}")
             
             try:
+                # 在处理每个邮箱前，彻底清理状态
+                if hasattr(self, 'email_handler') and self.email_handler:
+                    self.email_handler.clear_used_codes()
+                    logger.info(f"🧹 预清理: 已清除验证码缓存")
+                
+                # 完整处理单个邮箱的注册流程
                 result = await self.register_account(email, referral_code)
                 results.append(result)
                 
                 if result['success']:
-                    logger.info(f"✅ {email} 注册成功")
+                    logger.info(f"✅ 第 {i}/{len(emails)} 个邮箱注册成功: {email}")
                 else:
-                    logger.error(f"❌ {email} 注册失败: {result['error']}")
+                    logger.error(f"❌ 第 {i}/{len(emails)} 个邮箱注册失败: {email}")
+                    logger.error(f"   失败原因: {result['error']}")
                 
-                # 在处理下一个邮箱前等待
+                # 在处理下一个邮箱前等待并彻底清理状态
                 if i < len(emails):
-                    # 随机延迟，避免被检测
-                    actual_delay = delay_between_requests + random.uniform(-2, 5)
-                    logger.info(f"等待 {actual_delay:.1f} 秒后处理下一个邮箱...")
+                    # 增加随机延迟，避免被检测
+                    actual_delay = delay_between_requests + random.uniform(-3, 8)
+                    logger.info(f"⏳ 等待 {actual_delay:.1f} 秒后处理下一个邮箱...")
                     await asyncio.sleep(actual_delay)
                     
+                    # 彻底清理状态，为下一个邮箱做准备
+                    if hasattr(self, 'email_handler') and self.email_handler:
+                        self.email_handler.clear_used_codes()
+                        logger.info(f"🧹 已清理验证码缓存，准备处理下一个邮箱")
+                        
+                        # 刷新邮箱连接，确保状态干净
+                        try:
+                            self.email_handler.imap.select('INBOX')
+                            logger.info(f"🔄 已刷新邮箱连接")
+                        except Exception as e:
+                            logger.warning(f"刷新邮箱连接失败: {str(e)}")
+                    
             except Exception as e:
-                logger.error(f"处理邮箱 {email} 时发生异常: {str(e)}")
+                logger.error(f"❌ 处理邮箱 {email} 时发生异常: {str(e)}")
                 results.append({
                     'success': False,
                     'email': email,
@@ -530,10 +778,16 @@ class PolyflowAPIClient:
                     'error': str(e),
                     'timestamp': datetime.now().isoformat()
                 })
+                
+                # 即使出现异常，也要清理状态
+                if hasattr(self, 'email_handler') and self.email_handler:
+                    self.email_handler.clear_used_codes()
+                    logger.info(f"🧹 异常处理: 已清理验证码缓存")
         
         # 生成批量注册报告
         self._generate_batch_report(results)
         
+        logger.info(f"\n🏁 批量注册完成!")
         return results
     
     def _generate_batch_report(self, results: List[Dict]):

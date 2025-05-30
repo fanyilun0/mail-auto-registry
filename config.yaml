@@ -27,6 +27,11 @@ email:
   auth_method: app_password  # Gmail应用密码
   timeout: 120
 
+# 时区配置
+timezone:
+  local_timezone: "Asia/Shanghai"  # 本地时区
+  utc_offset_hours: 8  # UTC偏移小时数 (UTC+8)
+
 # 日志配置
 logging:
   level: INFO

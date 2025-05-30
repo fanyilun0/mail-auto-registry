@@ -51,35 +51,28 @@
 
 
 ### 项目文件结构
+zou-macmini-m4@192 mail-auto-registry % tree -L 3
 .
+├── captcha // 处理验证码
+│   └── captcha_solver.py
 ├── config.yaml
-├── config.yaml.backup
-├── data
-├── FINAL_POLYFLOW_TEST_REPORT.md
-├── logs
+├── data // 生成的数据
+├── logs // 生成的数据
 │   ├── polyflow_api_2025-05-29.log
+│   ├── polyflow_api_2025-05-30.log
 │   └── verification.log
-├── README.md
+├── modules // 统一存在需要注册的APP
+│   └── polyflow // Module 1
+│       ├── __init__.py
+│       ├── __pycache__
+│       ├── email.txt
+│       ├── polyflow_api_client.py
+│       ├── polyflow_registry.py
+│       ├── proxies.txt
+│       ├── start.sh
+│       ├── test.sh
+│       └── todo.md
+├── proxy // 注册过程中提供给Module使用的proxy工具 
+│   └── proxy_manager.py
 ├── requirements.txt
-├── run_polyflow_test.sh
-├── run_polyflow.sh
-├── src
-│   ├── __pycache__
-│   ├── browser
-│   ├── captcha
-│   ├── email_handler.py
-│   ├── logs
-│   ├── polyflow
-      ├── email.txt
-      ├── polyflow_api_client.py
-      ├── polyflow_registry.py
-      ├── proxies.txt
-      ├── run_polyflow_test.sh
-      ├── run_polyflow.sh
-      └── todo.md
-│   ├── other-modules
-│   ├── polyflow_api_main.py
-│   ├── proxy
-│   ├── test_polyflow_requirements.py
-│   └── utils
 ├── todo.md
