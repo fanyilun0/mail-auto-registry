@@ -2,5 +2,4 @@
 # 每行一个邮箱地址，用于批量注册
 # 以#开头的行为注释，会被忽略
 
-ranging_wireless677@simplelogin.com
-simplelogin-newsletter.finisher072@simplelogin.com
+email@test.com
