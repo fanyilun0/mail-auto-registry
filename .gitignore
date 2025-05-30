@@ -28,4 +28,4 @@ data/
 
 **.log
 
-email.txt
+**/*email.txt
