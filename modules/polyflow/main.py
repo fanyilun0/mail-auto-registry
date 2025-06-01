@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import yaml
 from loguru import logger
+import random
 
 # 添加项目根目录到Python路径
 current_file = Path(__file__).resolve()
@@ -179,7 +180,13 @@ class PolyflowMain:
             logger.error("没有要注册的邮箱地址")
             return []
         
-        logger.info(f"开始批量注册，共 {len(emails)} 个邮箱")
+        # 随机打乱邮箱列表，避免按固定顺序注册
+        shuffled_emails = emails.copy()
+        random.shuffle(shuffled_emails)
+        logger.info(f"📝 邮箱列表已随机打乱，原始数量: {len(emails)}")
+        logger.info(f"📝 打乱后前3个: {shuffled_emails[:3]}{'...' if len(shuffled_emails) > 3 else ''}")
+        
+        logger.info(f"🚀 开始批量注册，共 {len(shuffled_emails)} 个邮箱")
         
         # 初始化组件
         await self._initialize_components()
@@ -190,9 +197,9 @@ class PolyflowMain:
             async with self.api_client:
                 # 使用API客户端进行批量注册
                 results = await self.api_client.batch_register(
-                    emails=emails,
+                    emails=shuffled_emails,  # 使用打乱后的邮箱列表
                     referral_code=referral_code,
-                    delay_between_requests=self.config.get('security', {}).get('request_delay', 2)
+                    delay_between_requests=self.config.get('security', {}).get('request_delay', 15)  # 默认15秒间隔
                 )
                 
         except Exception as e:
@@ -220,8 +227,7 @@ class PolyflowMain:
             async with self.api_client:
                 result = await self.api_client.register_account(
                     email=email,
-                    referral_code=referral_code,
-                    max_retries=self.config.get('security', {}).get('max_retries', 3)
+                    referral_code=referral_code
                 )
                 return result
                 

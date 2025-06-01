@@ -29,6 +29,9 @@ class PolyflowAPIClient:
         self.current_proxy = None
         self.config_manager = config_manager
         
+        # 批量注册时的文件名，确保同一批次使用相同文件
+        self.batch_file_path = None
+        
         # 加载配置
         self._load_config()
         
@@ -259,22 +262,24 @@ class PolyflowAPIClient:
                     
                     # 记录响应信息
                     logger.info(f"响应状态码: {response.status}")
-                    logger.info(f"响应头: {dict(response.headers)}")
+                    logger.debug(f"响应头: {dict(response.headers)}")
                     
                     # 尝试解析响应
                     content_type = response.headers.get('content-type', '').lower()
                     
-                    if 'application/json' in content_type:
-                        response_data = await response.json()
-                    elif 'text/' in content_type:
+                    # 统一处理响应内容，无论content-type是什么
+                    try:
+                        # 首先尝试获取文本内容
                         text_content = await response.text()
-                        logger.warning(f"收到文本响应而非JSON: {text_content[:500]}...")
+                        logger.debug(f"原始响应内容: {text_content[:500]}...")
                         
-                        # 尝试解析为JSON（有些API返回text/plain但内容是JSON）
+                        # 尝试解析为JSON
                         try:
                             response_data = json.loads(text_content)
-                            logger.info("成功将文本内容解析为JSON")
+                            logger.info("成功解析响应为JSON格式")
                         except json.JSONDecodeError:
+                            logger.warning(f"响应内容不是有效的JSON格式: {text_content[:200]}...")
+                            
                             # 如果不是JSON，进行错误分析
                             if response.status == 403:
                                 if 'cloudflare' in text_content.lower():
@@ -283,14 +288,45 @@ class PolyflowAPIClient:
                                     return {"success": False, "error": "访问被拒绝", "status_code": response.status}
                                 else:
                                     return {"success": False, "error": "403 Forbidden - 可能需要更多反爬虫措施", "status_code": response.status}
-                            
-                            response_data = {"error": "非JSON响应", "content": text_content[:1000]}
-                    else:
-                        response_data = {"error": "未知内容类型", "content_type": content_type}
+                            elif response.status == 429:
+                                return {"success": False, "error": "请求频率过高，被限流", "status_code": response.status}
+                            elif response.status >= 500:
+                                return {"success": False, "error": f"服务器错误 {response.status}", "status_code": response.status}
+                            else:
+                                return {"success": False, "error": "非JSON响应", "content": text_content[:1000], "status_code": response.status}
                     
+                    except Exception as e:
+                        logger.error(f"解析响应内容时发生错误: {str(e)}")
+                        return {"success": False, "error": f"响应解析失败: {str(e)}", "status_code": response.status}
+                    
+                    # 根据HTTP状态码和响应内容判断成功与否
                     if response.status == 200:
-                        return {"success": True, "data": response_data, "status_code": response.status}
+                        # 检查响应数据的格式和内容
+                        if isinstance(response_data, dict):
+                            # 检查是否是polyflow API的标准响应格式
+                            if "success" in response_data:
+                                # 标准格式：{"success": true/false, "msg": {...}, "err_code": ..., "err_msg": ...}
+                                api_success = response_data.get("success", False)
+                                if api_success:
+                                    logger.info("API调用成功")
+                                    return {"success": True, "data": response_data, "status_code": response.status}
+                                else:
+                                    # API返回失败
+                                    err_msg = response_data.get("err_msg", "未知API错误")
+                                    err_code = response_data.get("err_code", "unknown")
+                                    logger.warning(f"API返回失败: {err_msg} (错误码: {err_code})")
+                                    return {"success": False, "error": response_data, "status_code": response.status}
+                            else:
+                                # 非标准格式，但HTTP状态码是200，认为成功
+                                logger.info("收到非标准格式的成功响应")
+                                return {"success": True, "data": response_data, "status_code": response.status}
+                        else:
+                            # 响应不是字典格式
+                            logger.warning(f"响应数据格式异常: {type(response_data)}")
+                            return {"success": False, "error": "响应格式异常", "data": response_data, "status_code": response.status}
                     else:
+                        # HTTP状态码不是200
+                        logger.warning(f"HTTP请求失败，状态码: {response.status}")
                         return {"success": False, "error": response_data, "status_code": response.status}
                         
             except aiohttp.ClientError as e:
@@ -353,17 +389,15 @@ class PolyflowAPIClient:
     def save_token_data(self, email: str, token_data: Dict, tokens_file_path: str = None):
         """保存token数据到文件"""
         try:
-            # 使用配置管理器获取保存路径
+            # 确定文件路径
             if tokens_file_path is None:
-                if self.config_manager:
-                    tokens_file_path = self.config_manager.get_tokens_file_path()
+                # 如果是批量注册，使用同一个文件
+                if self.batch_file_path:
+                    tokens_file_path = self.batch_file_path
                 else:
-                    # 兼容旧的路径检测方式
-                    current_dir = os.getcwd()
-                    if current_dir.endswith('/src'):
-                        tokens_file_path = "../data/polyflow_tokens.txt"
-                    else:
-                        tokens_file_path = "data/polyflow_tokens.txt"
+                    # 生成带时间戳的文件名
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    tokens_file_path = f"data/polyflow_{timestamp}.txt"
             
             # 确保目录存在
             os.makedirs(os.path.dirname(tokens_file_path), exist_ok=True)
@@ -373,15 +407,15 @@ class PolyflowAPIClient:
             token = msg.get("token", "")
             expiry_timestamp = msg.get("expiry", 0)
             
-            # 转换时间戳为可读时间
+            # 转换时间戳为标准时间格式
             if expiry_timestamp:
                 expiry_time = datetime.fromtimestamp(expiry_timestamp, tz=timezone.utc)
-                expiry_str = expiry_time.strftime("%Y-%m-%d %H:%M:%S UTC")
+                expiry_str = expiry_time.strftime("%Y-%m-%d %H:%M:%S")
             else:
                 expiry_str = "Unknown"
             
-            # 构建数据行：email|token|expire
-            data_line = f"{email}|{token}|{expiry_str}\n"
+            # 构建数据行：email/token/expire_time
+            data_line = f"{email}/{token}/{expiry_str}\n"
             
             # 检查文件是否存在，如果不存在则添加表头
             file_exists = os.path.exists(tokens_file_path)
@@ -389,10 +423,9 @@ class PolyflowAPIClient:
             # 以追加模式写入文件
             with open(tokens_file_path, 'a', encoding='utf-8') as f:
                 if not file_exists:
-                    # 添加表头
-                    f.write("# Polyflow Token数据\n")
-                    f.write("# 格式: email|token|expire\n")
-                    f.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    # 添加表头注释
+                    f.write(f"# Polyflow Token数据 - 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("# 格式: email/token/expire_time\n")
                     f.write("\n")
                 f.write(data_line)
                 
@@ -558,13 +591,15 @@ class PolyflowAPIClient:
         
         Args:
             email: 目标邮箱地址
-            timeout: 超时时间（秒）
+            timeout: 超时时间（秒），默认180秒
             send_time: 发送验证码的时间，用于过滤旧邮件
             
         Returns:
             验证码字符串，如果获取失败返回None
         """
-        logger.info(f"🔍 开始为 {email} 获取验证码，超时时间: {timeout}秒")
+        # 确保超时时间不超过180秒
+        timeout = min(timeout, 180)
+        logger.info(f"🔍 开始为 {email} 获取验证码，最大等待时间: {timeout}秒")
         if send_time:
             logger.info(f"📅 只获取 {send_time.strftime('%Y-%m-%d %H:%M:%S')} 之后的邮件")
         
@@ -579,7 +614,8 @@ class PolyflowAPIClient:
         while time.time() - start_time < timeout:
             try:
                 retry_count += 1
-                logger.info(f"🔄 第 {retry_count}/{max_retries} 次尝试获取验证码...")
+                elapsed_time = time.time() - start_time
+                logger.info(f"🔄 第 {retry_count}/{max_retries} 次尝试获取验证码... (已等待 {elapsed_time:.1f}秒)")
                 
                 # 刷新邮箱连接，确保获取最新邮件
                 if retry_count > 1:
@@ -669,26 +705,32 @@ class PolyflowAPIClient:
                 
                 # 如果没有找到新邮件，给出更详细的信息
                 if not found_new_email and send_time:
-                    elapsed_time = time.time() - start_time
                     logger.info(f"⏳ 未找到 {email} 的新验证码 (已等待 {elapsed_time:.1f}秒)")
                     
-                    # 如果等待时间超过60秒，记录详细信息但不降低标准
-                    if elapsed_time > 60:
-                        logger.warning(f"⚠️ 等待时间较长，但仍坚持严格的时间过滤标准")
+                    # 如果等待时间超过120秒，给出提示但继续等待
+                    if elapsed_time > 120:
+                        logger.warning(f"⚠️ 等待时间较长 ({elapsed_time:.1f}秒)，但仍坚持严格的时间过滤标准")
                         logger.warning(f"   发送时间: {send_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         logger.warning(f"   当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                        logger.warning(f"   建议检查: 1) 邮件是否真的发送成功 2) 网络连接 3) Gmail设置")
                 
                 # 等待一段时间后重试
                 wait_time = 5 if retry_count <= 6 else 10  # 前30秒每5秒重试，之后每10秒重试
-                logger.info(f"⏳ 等待 {wait_time} 秒后重试... (剩余时间: {timeout - (time.time() - start_time):.1f}秒)")
-                await asyncio.sleep(wait_time)
+                remaining_time = timeout - (time.time() - start_time)
+                
+                if remaining_time <= 0:
+                    break
+                    
+                actual_wait = min(wait_time, remaining_time)
+                logger.info(f"⏳ 等待 {actual_wait:.1f} 秒后重试... (剩余时间: {remaining_time:.1f}秒)")
+                await asyncio.sleep(actual_wait)
                 
             except Exception as e:
                 logger.error(f"❌ 获取 {email} 验证码时发生错误: {str(e)}")
                 await asyncio.sleep(5)
         
         logger.error(f"❌ 获取 {email} 验证码超时（{timeout}秒）")
-        logger.error(f"💡 建议检查: 1) 邮件是否真的发送成功 2) 网络连接 3) Gmail设置")
+        logger.error(f"💡 建议检查: 1) 邮件是否真的发送成功 2) 网络连接 3) Gmail设置 4) 邮箱是否被限制")
         return None
     
     def _is_recent_verification_email(self, content: str) -> bool:
@@ -726,68 +768,86 @@ class PolyflowAPIClient:
         """
         results = []
         
-        logger.info(f"🚀 开始批量注册，共 {len(emails)} 个邮箱")
-        logger.info(f"⚙️ 每个邮箱间隔: {delay_between_requests}秒")
+        # 随机打乱邮箱列表，避免按固定顺序注册
+        shuffled_emails = emails.copy()
+        random.shuffle(shuffled_emails)
+        logger.info(f"📝 邮箱列表已随机打乱，原始顺序: {emails[:3]}{'...' if len(emails) > 3 else ''}")
+        logger.info(f"📝 打乱后顺序: {shuffled_emails[:3]}{'...' if len(shuffled_emails) > 3 else ''}")
         
-        for i, email in enumerate(emails, 1):
-            logger.info(f"\n{'='*60}")
-            logger.info(f"📧 正在处理第 {i}/{len(emails)} 个邮箱: {email}")
-            logger.info(f"{'='*60}")
-            
-            try:
-                # 在处理每个邮箱前，彻底清理状态
-                if hasattr(self, 'email_handler') and self.email_handler:
-                    self.email_handler.clear_used_codes()
-                    logger.info(f"🧹 预清理: 已清除验证码缓存")
+        # 设置批量注册的文件路径，确保同一批次使用相同文件
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.batch_file_path = f"data/polyflow_{timestamp}.txt"
+        
+        logger.info(f"🚀 开始批量注册，共 {len(shuffled_emails)} 个邮箱")
+        logger.info(f"⚙️ 每个邮箱间隔: {delay_between_requests}秒")
+        logger.info(f"📄 数据将保存到: {self.batch_file_path}")
+        
+        try:
+            for i, email in enumerate(shuffled_emails, 1):
+                logger.info(f"\n{'='*60}")
+                logger.info(f"📧 正在处理第 {i}/{len(shuffled_emails)} 个邮箱: {email}")
+                logger.info(f"{'='*60}")
                 
-                # 完整处理单个邮箱的注册流程
-                result = await self.register_account(email, referral_code)
-                results.append(result)
-                
-                if result['success']:
-                    logger.info(f"✅ 第 {i}/{len(emails)} 个邮箱注册成功: {email}")
-                else:
-                    logger.error(f"❌ 第 {i}/{len(emails)} 个邮箱注册失败: {email}")
-                    logger.error(f"   失败原因: {result['error']}")
-                
-                # 在处理下一个邮箱前等待并彻底清理状态
-                if i < len(emails):
-                    # 增加随机延迟，避免被检测
-                    actual_delay = delay_between_requests + random.uniform(-3, 8)
-                    logger.info(f"⏳ 等待 {actual_delay:.1f} 秒后处理下一个邮箱...")
-                    await asyncio.sleep(actual_delay)
-                    
-                    # 彻底清理状态，为下一个邮箱做准备
+                try:
+                    # 在处理每个邮箱前，彻底清理状态
                     if hasattr(self, 'email_handler') and self.email_handler:
                         self.email_handler.clear_used_codes()
-                        logger.info(f"🧹 已清理验证码缓存，准备处理下一个邮箱")
-                        
-                        # 刷新邮箱连接，确保状态干净
-                        try:
-                            self.email_handler.imap.select('INBOX')
-                            logger.info(f"🔄 已刷新邮箱连接")
-                        except Exception as e:
-                            logger.warning(f"刷新邮箱连接失败: {str(e)}")
+                        logger.info(f"🧹 预清理: 已清除验证码缓存")
                     
-            except Exception as e:
-                logger.error(f"❌ 处理邮箱 {email} 时发生异常: {str(e)}")
-                results.append({
-                    'success': False,
-                    'email': email,
-                    'token': None,
-                    'error': str(e),
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-                # 即使出现异常，也要清理状态
-                if hasattr(self, 'email_handler') and self.email_handler:
-                    self.email_handler.clear_used_codes()
-                    logger.info(f"🧹 异常处理: 已清理验证码缓存")
-        
-        # 生成批量注册报告
-        self._generate_batch_report(results)
-        
-        logger.info(f"\n🏁 批量注册完成!")
+                    # 完整处理单个邮箱的注册流程
+                    result = await self.register_account(email, referral_code)
+                    results.append(result)
+                    
+                    if result['success']:
+                        logger.info(f"✅ 第 {i}/{len(shuffled_emails)} 个邮箱注册成功: {email}")
+                    else:
+                        logger.error(f"❌ 第 {i}/{len(shuffled_emails)} 个邮箱注册失败: {email}")
+                        logger.error(f"   失败原因: {result['error']}")
+                    
+                    # 在处理下一个邮箱前等待并彻底清理状态
+                    if i < len(shuffled_emails):
+                        # 增加随机延迟，避免被检测
+                        actual_delay = delay_between_requests + random.uniform(-3, 8)
+                        logger.info(f"⏳ 等待 {actual_delay:.1f} 秒后处理下一个邮箱...")
+                        await asyncio.sleep(actual_delay)
+                        
+                        # 彻底清理状态，为下一个邮箱做准备
+                        if hasattr(self, 'email_handler') and self.email_handler:
+                            self.email_handler.clear_used_codes()
+                            logger.info(f"🧹 已清理验证码缓存，准备处理下一个邮箱")
+                            
+                            # 刷新邮箱连接，确保状态干净
+                            try:
+                                self.email_handler.imap.select('INBOX')
+                                logger.info(f"🔄 已刷新邮箱连接")
+                            except Exception as e:
+                                logger.warning(f"刷新邮箱连接失败: {str(e)}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ 处理邮箱 {email} 时发生异常: {str(e)}")
+                    results.append({
+                        'success': False,
+                        'email': email,
+                        'token': None,
+                        'error': str(e),
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    # 即使出现异常，也要清理状态
+                    if hasattr(self, 'email_handler') and self.email_handler:
+                        self.email_handler.clear_used_codes()
+                        logger.info(f"🧹 异常处理: 已清理验证码缓存")
+            
+            # 生成批量注册报告
+            self._generate_batch_report(results)
+            
+            logger.info(f"\n🏁 批量注册完成!")
+            logger.info(f"📄 所有token数据已保存到: {self.batch_file_path}")
+            
+        finally:
+            # 清理批量注册状态
+            self.batch_file_path = None
+            
         return results
     
     def _generate_batch_report(self, results: List[Dict]):
